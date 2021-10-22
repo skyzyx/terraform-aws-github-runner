@@ -4,30 +4,7 @@
 
 This [Terraform](https://www.terraform.io/) module creates the required infrastructure needed to host [GitHub Actions](https://github.com/features/actions) self-hosted, autoscaling runners on [AWS spot instances](https://aws.amazon.com/ec2/spot/). It provides the required logic to handle the lifecycle for scaling-up and down using a set of AWS Lambda functions. Runners are scaled-down to zero to avoid costs when no workflows are active.
 
-- [Motivation](#motivation)
-- [Overview](#overview)
-  - [ARM64 support via Graviton/Graviton2 instance-types](#arm64-support-via-gravitongraviton2-instance-types)
-- [Usages](#usages)
-  - [Setup GitHub App (part 1)](#setup-github-app-part-1)
-  - [Setup terraform module](#setup-terraform-module)
-  - [Setup the webhook / GitHub App (part 2)](#setup-the-webhook--github-app-part-2)
-    - [Option 1: Webhook](#option-1-webhook)
-    - [Option 2: App](#option-2-app)
-    - [Install app](#install-app)
-  - [Encryption](#encryption)
-  - [Idle runners](#idle-runners)
-- [Examples](#examples)
-- [Sub modules](#sub-modules)
-  - [ARM64 configuration for submodules](#arm64-configuration-for-submodules)
-- [Debugging](#debugging)
-- [Requirements](#requirements)
-- [Providers](#providers)
-- [Modules](#modules)
-- [Resources](#resources)
-- [Inputs](#inputs)
-- [Outputs](#outputs)
-- [Contribution](#contribution)
-- [Philips Forest](#philips-forest)
+> **NOTE:** Click the _list_ icon to the left of "README.md" for the table of contents.
 
 ## Motivation
 
@@ -92,20 +69,30 @@ When using the default example or top-level module, specifying an `instance_type
 
 Examples are provided in [the example directory](examples/). Please ensure you have installed the following tools.
 
-- Terraform, or [tfenv](https://github.com/tfutils/tfenv).
-- Bash shell or compatible
-- Docker (optional, to build lambdas without node).
-- AWS cli (optional)
-- Node and yarn (for lambda development).
+- Terraform, [tfenv](https://github.com/tfutils/tfenv), or [tfswitch](https://tfswitch.warrensbox.com)
+- Bash shell
+- Docker (optional, to build Lambda functions without Node.js installed locally)
+- AWS CLI (optional)
+- Node.js and `yarn` (for Lambda development)
 
-The module supports two main scenarios for creating runners. On repository level a runner will be dedicated to only one repository, no other repository can use the runner. On organization level you can use the runner(s) for all the repositories within the organization. See [GitHub instructions](https://help.github.com/en/actions/hosting-your-own-runners/about-self-hosted-runners) for more information. Before starting the deployment you have to choose one option.
+The module supports three main scenarios for creating runners.
 
-GitHub workflows fail immediately if there is no action runner available for your builds. Since this module supports scaling down to zero, builds will fail in case there is no active runner available. We recommend to create an offline runner with matching labels to the configuration. Create this runner manually by following the [GitHub instructions](https://help.github.com/en/actions/hosting-your-own-runners/about-self-hosted-runners) for adding a new runner on your local machine. If you stop the process after the step of running the `config.sh` script the runner will remain offline. This offline runner ensures that builds will not fail immediately and stay queued until there is an EC2 runner to pick it up.
+* **Repository-level:** A runner will be dedicated to only one repository. No other repository can use the runner.
 
-Another convenient way of deploying this temporary required runner is using following approach. This automates all the manual labor.
+* **Organization-level:** You can use the runner(s) for all of the repositories within the organization.
+
+* **Enterprise-level:** [Only GitHub Enterprise Server] You can use the set of runners for all orgs and repos within your installation. However, the GitHub app you create (below) will need to be _installed_ by each organization’s administrator.
+
+See “[About self-hosted runners](https://help.github.com/en/actions/hosting-your-own-runners/about-self-hosted-runners)” for more information.
+
+### Caveats
+
+GitHub workflows will fail _immediately_ if there is no Actions runner available for your builds. Since this module supports scaling-down to zero runners, builds will fail when there is no active runner available. We recommend creating an _offline_ runner with labels which match the _scalable_ configuration. You can create this runner manually by following “[About self-hosted runners](https://help.github.com/en/actions/hosting-your-own-runners/about-self-hosted-runners)”. (We are currently evaluating automation options — [#519](https://github.com/philips-labs/terraform-aws-github-runner/issues/519)).
 
 <details>
   <summary>Temporary runner using Docker</summary>
+
+  Another convenient way of deploying this temporary required runner is using following approach. This automates all the manual labor.
 
   ```bash
   docker run -it --name my-runner \
@@ -116,50 +103,88 @@ Another convenient way of deploying this temporary required runner is using foll
       tcardonne/github-runner:ubuntu-20.04
   ```
 
+  You should stop and remove the container once the runner is registered as the builds would otherwise go to your local Docker container.
+
+  The setup consists of running Terraform to create all AWS resources and manually configuring the GitHub App. The Terraform module requires configuration from the GitHub App and the GitHub app requires output from Terraform. Therefore you first create the GitHub App and configure the basics, then run Terraform, and afterwards finalize the configuration of the GitHub App.
+  
 </details>
 
-You should stop and remove the container once the runner is registered as the builds would otherwise go to your local Docker container.
+## Setting up the GitHub App and AWS Infrastructue
 
-The setup consists of running Terraform to create all AWS resources and manually configuring the GitHub App. The Terraform module requires configuration from the GitHub App and the GitHub app requires output from Terraform. Therefore you first create the GitHub App and configure the basics, then run Terraform, and afterwards finalize the configuration of the GitHub App.
+### Stage 1: Setting up the GitHub App
 
-### Setup GitHub App (part 1)
+Go to GitHub and [create a new app](https://docs.github.com/en/developers/apps/creating-a-github-app).
 
-Go to GitHub and [create a new app](https://docs.github.com/en/developers/apps/creating-a-github-app). Beware you can create apps your organization or for a user. For now we support only organization level apps.
+> **NOTE:** You have the option to create apps for your organization or for a user. For now, we support only organization-level apps.
 
-1. Create app in Github
-2. Choose a name
-3. Choose a website (mandatory, not required for the module).
-4. Disable the webhook for now (we will configure this later or create an alternative webhook).
-5. Permissions for all runners:
-    - Repository:
-      - `Actions`: Read-only (check for queued jobs)
-      - `Checks`: Read-only (receive events for new builds)
-      - `Metadata`: Read-only (default/required)
-6. _Permissions for repo level runners only_:
-   - Repository:
-     - `Administration`: Read & write (to register runner)
-7. _Permissions for organization level runners only_:
-   - Organization
-     - `Self-hosted runners`: Read & write (to register runner)
-8. Save the new app.
-9. On the General page, make a note of the "App ID" and "Client ID" parameters.
-10. Generate a new private key and save the `app.private-key.pem` file.
+1. Create a new GitHub app. Choose a name, and give it an app URL (required by GitHub/GHES; not used by the module).
 
-### Setup terraform module
+1. Enable the webhook. For now, enter a bogus endpoint (we will update this later). Since event data _may_ flow to this URL, use a domain that you have control over so that the POST payload doesn't end up in someone else's logs. (Your cybersecurity team would consider this _information leakage_.)
 
-#### Download lambdas <!-- omit in toc -->
+1. You will also need to generate a webhook _secret_. It could be a random hash, a random string, something from a password generator, but the important thing is the _randomness_. Randomness makes things harder to guess, and the human brain is really bad at random.
 
-To apply the terraform module, the compiled lambdas (.zip files) need to be available either locally or in an S3 bucket. They can be either downloaded from the GitHub release page or build locally.
+1. Permissions for **all** runners:
+    * Repository:
+      * `Actions`: Read-only (check for queued jobs)
+      * `Checks`: Read-only (receive events for new builds)
+      * `Metadata`: Read-only (default/required)
 
-To read the files from S3, set the `lambda_s3_bucket` variable and the specific object key for each lambda.
+1. Permissions for **repo-level** runners only:
+   * Repository:
+     * `Administration`: Read & write (to register runner)
 
-The lambdas can be downloaded manually from the [release page](https://github.com/philips-labs/terraform-aws-github-runner/releases) or using the [download-lambda](./modules/download-lambda) terraform module (requires `curl` to be installed on your machine). In the `download-lambda` directory, run `terraform init && terraform apply`. The lambdas will be saved to the same directory.
+1. Permissions for **organization-level** runners only:
+   * Organization
+     * `Self-hosted runners`: Read & write (to register runner)
 
-For local development you can build all the lambdas at once using `.ci/build.sh` or individually using `yarn dist`.
+1. Save the app. This will generate an _App ID_, _Client ID_, and _Client Secret_.
 
-#### Service-linked role <!-- omit in toc -->
+1. It should also generate an RSA private key for you. You'll need this to authenticate, and it's not retrievable without creating a whole new one. Keep it safe.
 
-To create spot instances the `AWSServiceRoleForEC2Spot` role needs to be added to your account. You can do that manually by following the [AWS docs](https://docs.aws.amazon.com/AWSEC2/latest/UserGuide/spot-requests.html#service-linked-roles-spot-instance-requests). To use terraform for creating the role, either add the following resource or let the module manage the the service linked role by setting `create_service_linked_role_spot` to `true`. Be aware this is an account global role, so maybe you don't want to manage it via a specific deployment.
+### Stage 2: Running Terraform
+
+1. If you're familiar with Terraform and Terraform modules, you'll know that you need to write your `main.tf` which _calls_ your Terraform module. You pass values to variables defined by that module, and if you want the module outputs to be available to you, you will need to expose them as `output` blocks in your `main.tf`.
+
+1. Another thing to remember is that Terraform will _automatically load_ any variables from `*.auto.tfvars` files. This means that you can write a little code to lookup networking values from AWS and save them as a standalone file (e.g., `networking.auto.tfvars`). This is also a good tip for keeping _secrets_ out of your Git repository. Put your secrets in a file that is `.gitignore`’d, and shared from a central place that the appropriate people have access to.
+
+In this example, I'm using a file structure which looks something like this:
+
+```plain
+.
+├── bin
+│   ├── build-lambdas.sh
+│   └── generate-network-tfvars.sh
+├── docs
+│   └── OAUTH_APPLICATION.md
+├── terraform
+│   ├── 01-service-linked-role
+│   │   ├── main.tf
+│   │   └── ...
+│   └── 02-standup-infrastructure
+│       ├── main.tf
+│       └── ...
+├── .gitignore
+├── Makefile
+└── README.md
+```
+
+#### Service-Linked Role (One-Time Operation!)
+
+To create spot instances, the `AWSServiceRoleForEC2Spot` role needs to be added to your account. First, determine whether or not this even needs to be created.
+
+```bash
+aws iam list-roles --path-prefix /aws-service-role/spot.amazonaws.com/ \
+  | jq '.Roles | length'
+```
+
+| Result | Meaning                                                      |
+|--------|--------------------------------------------------------------|
+| `1`    | The role already exists. Skip ahead to the next instruction. |
+| `0`    | You need to create the role.                                 |
+
+
+To use Terraform for creating the role, set this up as **separate** Terraform with a **separate** state file. (Using the file structure above, this is `{root}/terraform/01-service-linked-role`.)
+
 
 ```hcl
 resource "aws_iam_service_linked_role" "spot" {
@@ -167,14 +192,44 @@ resource "aws_iam_service_linked_role" "spot" {
 }
 ```
 
-#### Terraform module <!-- omit in toc -->
+#### Pre-Compiling Lambda Functions
 
-Next create a second terraform workspace and initiate the module, or adapt one of the [examples](./examples).
+In this example, this file lives in the filesystem at `{root}/bin/build-lambdas.sh`.
 
-Note that `github_app.key_base64` needs to be the base64-encoded `.pem` file, i.e., the output of `base64 app.private-key.pem` (not directly the content of `app.private-key.pem`).
+```bash
+#!/usr/bin/env bash
+set -euo pipefail
+
+# Discover the root directory of the repository, whereas $ROOT_DIR/bin/build-lambdas.sh is this very file.
+ROOT_DIR="$(dirname "$(dirname "$(realpath "${BASH_SOURCE[0]}")")")"
+echo "ROOT_DIR=${ROOT_DIR}"
+
+# Touch
+mkdir -p /tmp/aws-github-runner
+rm -Rf /tmp/aws-github-runner
+
+# Fetch
+git clone --branch "$git_tag" --depth 1 git@github.com:philips-labs/terraform-aws-github-runner.git /tmp/aws-github-runner
+
+# Build Lambda functions
+cd /tmp/aws-github-runner
+.ci/build.sh
+
+# Copy into the Terraform directory
+cp -rvf /tmp/aws-github-runner/lambda_output "${ROOT_DIR}/terraform/02-standup-infrastructure/lambda_output"
+
+# Clean up after ourselves
+rm -Rf /tmp/aws-github-runner
+```
+
+#### Applying the Terraform Module
+
+Create a second Terraform workspace (not to be confused with _Terraform Workspaces_) or adapt one of the [examples](./examples). (Using the file structure above, this is `{root}/terraform/02-standup-infrastructure`.)
+
+Note that `github_runner.key_base64` needs to be Base64-encoded — that is, the output of `base64(app.private-key.pem)`, not the content of `app.private-key.pem`.
 
 ```terraform
-module "github-runner" {
+module "github_runner" {
   source  = "philips-labs/github-runner/aws"
   version = "REPLACE_WITH_VERSION"
 
@@ -190,69 +245,77 @@ module "github-runner" {
     webhook_secret = "webhook_secret"
   }
 
-  webhook_lambda_zip                = "lambdas-download/webhook.zip"
-  runner_binaries_syncer_lambda_zip = "lambdas-download/runner-binaries-syncer.zip"
-  runners_lambda_zip                = "lambdas-download/runners.zip"
-  enable_organization_runners = true
+  webhook_lambda_zip                = "lambda_output/webhook.zip"
+  runner_binaries_syncer_lambda_zip = "lambda_output/runner-binaries-syncer.zip"
+  runners_lambda_zip                = "lambda_output/runners.zip"
+  enable_organization_runners       = true
 }
 ```
 
-**ARM64** support: Specify an `a1` or `*6g*` (6th-gen Graviton2) instance type to stand up an ARM64 runner, otherwise the default is x86_64.
+We also want to expose the outputs from the module to the outer scope where our own `main.tf` lives, so that we can access them with `terraform output`.
 
-Run terraform by using the following commands
-
-```bash
-terraform init
-terraform apply
+```terraform
+output "webhook_endpoint" {
+  description = "The URL of the API Gateway that we'll use as a webhook."
+  value       = module.gha_runner.webhook.endpoint
+}
 ```
 
-The terraform output displays the API gateway url (endpoint) and secret, which you need in the next step.
+> **NOTE:** For `ARM64` support, specify an `a1` or `*6g*` (6th-gen Graviton2) instance type to stand up an ARM64 runner, otherwise the default is `x86_64`.
 
-The lambda for syncing the GitHub distribution to S3 is triggered via CloudWatch (by default once per hour). After deployment the function is triggered via S3 to ensure the distribution is cached.
+Run Terraform by using the following commands. (This assumes that your AWS credentials are available in your terminal session.)
 
-### Setup the webhook / GitHub App (part 2)
+1. Initialize Terraform.
 
-At this point you have 2 options. Either create a separate webhook (enterprise, 
-org, or repo), or create webhook in the App. 
+    ```bash
+    terraform init
+    ```
 
-#### Option 1: Webhook
+1. Generate a _plan_, and then review it so that you understand what's being created.
 
-1. Create a new webhook on repo level for repo level for repo level runner, or org (or enterprise level) for an org level runner.
-2. Provide the webhook url, should be part of the output of terraform.
-3. Provide the webhook secret (`terraform output -raw <NAME_OUTPUT_VAR>`).
-4. In the "Permissions & Events" section and then "Subscribe to Events" subsection, check either "Workflow Job" or "Check Run" (choose only 1 option!!!).
-5. In the "Install App" section, install the App in your organization, either in all or in selected repositories.
- 
-#### Option 2: App
+    ```bash
+    terraform plan -out tfplan
+    ```
 
-Go back to the GitHub App and update the following settings.
+1. Apply the plan, ensuring that what you reviewed is what will happen.
 
-1. Enable the webhook.
-2. Provide the webhook url, should be part of the output of terraform.
-3. Provide the webhook secret (`terraform output -raw <NAME_OUTPUT_VAR>`).
-4. In the "Permissions & Events" section and then "Subscribe to Events" subsection, check either "Workflow Job" or "Check Run" (choose only 1 option!!!).
+    ```bash
+    terraform apply tfplan
+    ```
+
+1. Clean up after ourselves.
+
+    ```bash
+    rm -f tfplan
+    ```
+
+The output will display the API Gateway URL (endpoint), which you need in the next step.
+
+### Stage 3: Configure the Webhook
+
+1. Edit the GitHub App that we created in _Stage 1_. Take the webhook URL, and replace the bogus one with the one that we generated from Terraform.
+
+1. In the _Permissions and Events_ section of the GitHub App, under _Subscribe to Events_, check _Workflow Job_ (if available) or _Check Run_.
+
+  > **IMPORTANT:** Only choose one!
 
 #### Install app
 
-Finally you need to ensure the app is installed to all or selected repositories.
-
-Go back to the GitHub App and update the following settings.
-
-1. In the "Install App" section, install the App in your organization, either in all or in selected repositories.
-
-You are now ready to run action workloads on self hosted runner. Remember that builds will fail if there is no (offline) runner available with matching labels.
+In the _Install App_ section of the GitHub App, install the app into an organization where are an adminstrator, then select which repositories should have access to it. Every organization that wants to use these runners MUST install the GitHub App you created in _Stage 1_. Only org admins can perform an app installation.
+ 
+Remember that **builds will fail** if there is no (offline) runner available with matching labels.
 
 ### Encryption
 
-The module support 2 scenarios to manage environment secrets and private key of the Lambda functions.
+The module support two scenarios to manage environment secrets and private key of the Lambda functions.
 
-#### Encrypted via a module managed KMS key (default) <!-- omit in toc -->
+#### Encrypted via a Managed KMS Key (Default)
 
-This is the default, no additional configuration is required.
+This is the default option. No additional configuration is required.
 
-#### Encrypted via a provided KMS key <!-- omit in toc -->
+#### Encrypted via a Customer-Provided KMS Key
 
-You have to create an configure you KMS key. The module will use the context with key: `Environment` and value `var.environment` as encryption context.
+You will need to create an configure your own KMS key (known as a _Customer-Provided KMS Key_ or sometimes _Customer-Managed KMS Key_). The module will use the context with key: `Environment` and value `var.environment` as encryption context.
 
 ```hcl
 resource "aws_kms_key" "github" {
@@ -260,16 +323,16 @@ resource "aws_kms_key" "github" {
 }
 
 module "runners" {
-
-  ...
   kms_key_arn = aws_kms_key.github.arn
-  ...
-
+  # ...
+}
 ```
 
-### Idle runners
+### Idle Runners
 
-The module will scale down to zero runners be default, by specifying a `idle_config` config idle runners can be kept active. The scale down lambda checks if any of the cron expressions matches the current time with a marge of 5 seconds. When there is a match the number of runners specified in the idle config will be kept active. In case multiple cron expressions matches only the first one is taken in to account. Below an idle configuration for keeping runners active from 9 to 5 on working days.
+The module will scale-down to zero runners by default. Specifying an `idle_config` configuration will enable idle runners to be kept active.
+
+The scale-down Lambda function checks to see if any cron expressions match the current time (within a margin of 5 seconds). When matched, the number of runners specified in the `idle_config` will be kept active. In case there are  multiple matches, only the first one is acted-upon. Below is an `idle_config` for keeping runners active from 9am–5pm, Monday–Friday.
 
 ```hcl
 idle_config = [{
@@ -279,11 +342,11 @@ idle_config = [{
 }]
 ```
 
-#### Supported config <!-- omit in toc -->
+#### Cron Syntax
 
-Cron expressions are parsed by [cron-parser](https://github.com/harrisiirak/cron-parser#readme). The supported syntax.
+Cron expressions are parsed by [cron-parser](https://github.com/harrisiirak/cron-parser#readme). The supported syntax is as follows:
 
-```bash
+```plain
 *    *    *    *    *    *
 ┬    ┬    ┬    ┬    ┬    ┬
 │    │    │    │    │    |
@@ -295,51 +358,61 @@ Cron expressions are parsed by [cron-parser](https://github.com/harrisiirak/cron
 └───────────────────────── second (0 - 59, optional)
 ```
 
-For time zones please check [TZ database name column](https://en.wikipedia.org/wiki/List_of_tz_database_time_zones) for the supported values.
+For timezones, please check [TZ database name column](https://en.wikipedia.org/wiki/List_of_tz_database_time_zones) for the supported values.
 
 ## Examples
 
 Examples are located in the [examples](./examples) directory. The following examples are provided:
 
-- _[Default](examples/default/README.md)_: The default example of the module
-- _[Permissions boundary](examples/permissions-boundary/README.md)_: Example usages of permissions boundaries.
+* _[Default](examples/default/README.md)_: The default example of the module
+* _[Permissions boundary](examples/permissions-boundary/README.md)_: Example usages of permissions boundaries.
 
-## Sub modules
+## Submodules
 
 The module contains several submodules, you can use the module via the main module or assemble your own setup by initializing the submodules yourself.
 
 The following submodules are the core of the module and are mandatory:
 
-- _[runner-binaries-syncer](./modules/runner-binaries-syncer/README.md)_ - Syncs the action runner distribution.
-- _[runners](./modules/runners/README.md)_ - Scales the action runners up and down
-- _[webhook](./modules/webhook/README.md)_ - Handles GitHub webhooks
+* _[runner-binaries-syncer](./modules/runner-binaries-syncer/README.md)_ - Fetches the _Runner Agent_ from GitHub and stores it in Amazon S3.
+* _[runners](./modules/runners/README.md)_ - Provides the scale-up and scale-down Lambda functions.
+* _[webhook](./modules/webhook/README.md)_ - Handles GitHub Event webhooks.
 
 The following sub modules are optional and are provided as example or utility:
 
-- _[download-lambda](./modules/download-lambda/README.md)_ - Utility module to download lambda artifacts from GitHub Release
-- _[setup-iam-permissions](./modules/setup-iam-permissions/README.md)_ - Example module to setup permission boundaries
+* _[download-lambda](./modules/download-lambda/README.md)_ - Download Lambda artifacts from the GitHub release page.
+* _[setup-iam-permissions](./modules/setup-iam-permissions/README.md)_ - Setup IAM permission boundaries.
 
-### ARM64 configuration for submodules
+### ARM64 Configuration for Submodules
 
-When not using the top-level module and specifying an `a1` or `*6g*` (6th-gen Graviton2) `instance_type`, the `runner-binaries-syncer` and `runners` submodules need to be configured appropriately for pulling the ARM64 GitHub action runner binary and leveraging the arm64 AMI for the runners.
+When not using the top-level module and specifying an `a1` or `*6g*` (6th-gen Graviton2) `instance_type`, the `runner-binaries-syncer` and `runners` submodules need to be configured appropriately for pulling the ARM64 GitHub Actions _Runner Agent_ and leveraging the ARM64 AMI for the runners.
 
-When configuring `runner-binaries-syncer`
+When configuring `runner-binaries-syncer`:
 
-- _runner_architecture_ - set to `arm64`, defaults to `x64`
+* _runner_architecture_ - Set to `arm64`. The default value is `x64`.
 
-When configuring `runners`
+When configuring `runners`:
 
-- _ami_filter_ - set to `["amzn2-ami-hvm-2*-arm64-gp2"]`, defaults to `["amzn2-ami-hvm-2.*-x86_64-ebs"]`
+* _ami_filter_ - Set to `["amzn2-ami-hvm-2*-arm64-gp2"]`. The default value is `["amzn2-ami-hvm-2.*-x86_64-ebs"]`.
 
 ## Debugging
 
 In case the setup does not work as intended follow the trace of events:
 
-- In the GitHub App configuration, the Advanced page displays all webhook events that were sent.
-- In AWS CloudWatch, every lambda has a log group. Look at the logs of the `webhook` and `scale-up` lambdas.
-- In AWS SQS you can see messages available or in flight.
-- Once an EC2 instance is running, you can connect to it in the EC2 user interface using Session Manager. Check the user data script using `cat /var/log/user-data.log`. By default several log files of the instances are streamed to AWS CloudWatch, look for a log group named `<environment>/runners`. In the log group you should see at least the log streams for the user data installation and runner agent.
-- Registered instances should show up in the Settings - Actions page of the repository or organization (depending on the installation mode).
+1. In the GitHub App configuration, the _Advanced_ page displays all webhook events that were sent.
+
+1. In AWS CloudWatch Logs, every Lambda function has a log group. Look at the logs of the `webhook` and `scale-up` Lambda functions.
+
+1. In AWS SQS you can see messages available or in flight.
+
+1. Once an EC2 instance is running, you can connect to it in the EC2 user interface using _Session Manager_. Check the `user_data` script using `cat /var/log/user-data.log`.
+
+  1. Several log files from the instances are streamed to AWS CloudWatch Logs.
+
+  1. Look for a log group named `<environment>/runners`.
+
+  1. In the log group you should see at least the log streams for the `user_data` installation and runner agent.
+
+1. Registered instances should show up in the _Settings_ → _Actions_ page of the repository or organization (depending on the installation mode).
 
 <!-- BEGINNING OF PRE-COMMIT-TERRAFORM DOCS HOOK -->
 ## Requirements
