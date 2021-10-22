@@ -2,7 +2,7 @@
 
 [![awesome-runners](https://img.shields.io/badge/listed%20on-awesome--runners-blue.svg)](https://github.com/jonico/awesome-runners)[![Terraform registry](https://img.shields.io/github/v/release/philips-labs/terraform-aws-github-runner?label=Terraform%20Registry)](https://registry.terraform.io/modules/philips-labs/github-runner/aws/) ![Terraform checks](https://github.com/philips-labs/terraform-aws-github-runner/workflows/Terraform%20root%20module%20checks/badge.svg) ![Lambda Webhook](https://github.com/philips-labs/terraform-aws-github-runner/workflows/Lambda%20Agent%20Webhook/badge.svg) ![Lambda Runners](https://github.com/philips-labs/terraform-aws-github-runner/workflows/Lambda%20Runners/badge.svg) ![Lambda Syncer](https://github.com/philips-labs/terraform-aws-github-runner/workflows/Lambda%20Runner%20Binaries%20Syncer/badge.svg)
 
-This [Terraform](https://www.terraform.io/) module creates the required infrastructure needed to host [GitHub Actions](https://github.com/features/actions) self hosted, auto scaling runners on [AWS spot instances](https://aws.amazon.com/ec2/spot/). It provides the required logic to handle the life cycle for scaling up and down using a set of AWS Lambda functions. Runners are scaled down to zero to avoid costs when no workflows are active.
+This [Terraform](https://www.terraform.io/) module creates the required infrastructure needed to host [GitHub Actions](https://github.com/features/actions) self-hosted, autoscaling runners on [AWS spot instances](https://aws.amazon.com/ec2/spot/). It provides the required logic to handle the lifecycle for scaling-up and down using a set of AWS Lambda functions. Runners are scaled-down to zero to avoid costs when no workflows are active.
 
 - [Motivation](#motivation)
 - [Overview](#overview)
@@ -31,50 +31,64 @@ This [Terraform](https://www.terraform.io/) module creates the required infrastr
 
 ## Motivation
 
-GitHub Actions `self hosted` runners provide a flexible option to run CI workloads on infrastructure of your choice. Currently there is no option provided to automate the creation and scaling of action runners. This module takes care of creating the AWS infrastructure to host action runners on spot instances. It provides lambda modules to orchestrate the life cycle of the action runners.
+GitHub Actions `self-hosted` runners provide a flexible option to run CI workloads on infrastructure of your choice. Currently there is no option provided to automate the creation and scaling of action runners. This module takes care of creating the AWS infrastructure to host action runners on spot instances. It provides Lambda functions to orchestrate the lifecycle of the action runners.
 
-Lambda is chosen as runtime for two major reasons. First it allows to create small components with minimal access to AWS and GitHub. Secondly it provides a scalable setup with minimal costs that works on repo level and scales to organization level. The lambdas will create Linux based EC2 instances with Docker to serve CI workloads that can run on Linux and/or Docker. The main goal is to support Docker based workloads.
+Lambda was chosen as runtime for two major reasons. First, it allows to create small components with minimal access to AWS and GitHub. Secondly, it provides a scalable setup with minimal costs that works on the repository level and scales to the organization level. The Lambda functions will create Linux-based EC2 instances with Docker to serve CI workloads that can run on Linux and/or Docker. The main goal is to support Docker-based workloads.
 
-A logical question would be why not Kubernetes? In the current approach we stay close to the way the GitHub action runners are available today. The approach is to install the runner on a host where the required software is available. With this setup we stay quite close to the current GitHub approach. Another logical choice would be AWS Auto Scaling groups. This choice would typically require much more permissions on instance level to GitHub. And besides that, scaling up and down is not trivial.
+A logical question would be why not Kubernetes? In the current approach, we stay close to the way the GitHub Actions runners are available today. The approach is to install the runner on a host where the required software is available. With this setup we stay quite close to the current GitHub approach. Another logical choice would be AWS Autoscaling Groups. This choice would typically require more permissions at the instance level to communicate with GitHub. Scaling up and down is not trivial.
 
 ## Overview
 
-The moment a GitHub action workflow requiring a `self-hosted` runner is triggered, GitHub will try to find a runner which can execute the workload. This module reacts to GitHub's [`check_run` event](https://docs.github.com/en/developers/webhooks-and-events/webhooks/webhook-events-and-payloads#check_run) or [`workflow_job` event](https://docs.github.com/en/free-pro-team@latest/developers/webhooks-and-events/webhook-events-and-payloads#workflow_job) for the triggered workflow and creates a new runner if necessary.
+### Events and Scaling-Up
 
-For receiving the `check_run` or `workflow_job` event by the webhook (lambda) a webhook in GitHub needs to be created. The `workflow_job` is the preferred option and the `check_run` option will be maintained for backward compatibility. Advantage of the `workflow_job` event is that the runner checks if the received event can run on the configured runners by matching the labels, which avoid instances are scaled up and never used. The following options are available:
+When a GitHub Actions workflow (requiring a `self-hosted` runner) is triggered, GitHub will try to find a runner which can execute the workload. This module reacts to GitHub's [`check_run` event](https://docs.github.com/en/developers/webhooks-and-events/webhooks/webhook-events-and-payloads#check_run) or [`workflow_job` event](https://docs.github.com/en/free-pro-team@latest/developers/webhooks-and-events/webhook-events-and-payloads#workflow_job) for the triggered workflow and creates a new runner if necessary.
+
+For receiving the `check_run` or `workflow_job` event by the webhook (Lambda fronted by API Gateway), a webhook reference in GitHub needs to be created. The `workflow_job` is the preferred option and the `check_run` option will be maintained for backward compatibility. (As of this writing, GitHub Enterprise Server v3.2 only supports `check_run`.) The advantage of the `workflow_job` event is that the runner checks if the received event can run on the configured runners by matching the labels, which avoid instances are scaled up and never used. The following options are available:
 
 - `workflow_job`: **(preferred option)** create a webhook on enterprise, org or app level.
+
 - `check_run`: create a webhook on enterprise, org, repo or app level. When using the app option, the app needs to be installed to repo's are using the self-hosted runners.
--  a Webhook needs to be created. The webhook hook can be defined on enterprise, org, repo, or app level. 
 
+-  A webhook needs to be created. The webhook _hook_ can be defined on the enterprise, org, repo, or GitHub App level.
 
-In AWS a [API gateway](https://docs.aws.amazon.com/apigateway/index.html) endpoint is created that is able to receive the GitHub webhook events via HTTP post. The gateway triggers the webhook lambda which will verify the signature of the event. This check guarantees the event is sent by the GitHub App. The lambda only handles `workflow_job` or `check_run` events with status `queued` and matching the runner labels (only for `workflow_job`). The accepted events are posted on a SQS queue. Messages on this queue will be delayed for a configurable amount of seconds (default 30 seconds) to give the available runners time to pick up this build.
+### Receiving the Event
 
-The "scale up runner" lambda is listening to the SQS queue and picks up events. The lambda runs various checks to decide whether a new EC2 spot instance needs to be created. For example, the instance is not created if the build is already started by an existing runner, or the maximum number of runners is reached.
+In AWS, an [API Gateway](https://docs.aws.amazon.com/apigateway/index.html) endpoint is created that is able to receive the GitHub webhook events via HTTP post. The gateway triggers the webhook lambda which will verify the signature of the event. This check guarantees the event is sent by the GitHub App. The Lambda only handles `workflow_job` or `check_run` events with status `queued` and matching the runner labels (only for `workflow_job`). The accepted events are posted to an SQS queue. Messages on this queue will be delayed for a configurable amount of seconds (default 30 seconds) to give the available runners time to pick up this build.
 
-The Lambda first requests a registration token from GitHub which is needed later by the runner to register itself. This avoids that the EC2 instance, which later in the process will install the agent, needs administration permissions to register the runner. Next the EC2 spot instance is created via the launch template. The launch template defines the specifications of the required instance and contains a [`user_data`](https://docs.aws.amazon.com/AWSEC2/latest/UserGuide/user-data.html) script. This script will install the required software and configure it. The registration token for the action runner is stored in the parameter store (SSM) from which the user data script will fetch it and delete it once it has been retrieved. Once the user data script is finished the action runner should be online and the workflow will start in seconds.
+The "scale-up runner" Lambda function listens to the SQS queue and picks up events. The Lambda function runs various checks to decide whether or not a new EC2 instance needs to be created. For example, the instance is not created if the build has already been picked-up by an existing runner, or the maximum number of runners has been reached.
 
-Scaling down the runners is at the moment brute-forced, every configurable amount of minutes a lambda will check every runner (instance) if it is busy. In case the runner is not busy it will be removed from GitHub and the instance terminated in AWS. At the moment there seems no other option to scale down more smoothly.
+### Registering the Runner
 
-Downloading the GitHub Action Runner distribution can be occasionally slow (more than 10 minutes). Therefore a lambda is introduced that synchronizes the action runner binary from GitHub to an S3 bucket. The EC2 instance will fetch the distribution from the S3 bucket instead of the internet.
+The Lambda function first requests a registration token from GitHub which is needed by the runner to register itself with GitHub Actions. This ensures that the EC2 instance will not need admin permissions to install the _Runners Agent_ and register itself. Next the EC2 instance is created via a Launch Template. The Launch Template defines the configuration for the instances, and contains [`user_data`](https://docs.aws.amazon.com/AWSEC2/latest/UserGuide/user-data.html) which will install and configure the required software. The registration token for the Actions runner is stored in Parameter Store (part of AWS SSM), and the `user_data` will fetch, use, and delete it. Once finished, the Actions runner should be online and the workflow should start in seconds.
 
-Secrets and private keys are stored in SSM Parameter Store. These values are encrypted using the default KMS key for SSM or passing in a custom KMS key.
+### Scaling-Down
+
+Scaling-down the runners is brute-forced at the moment. Periodically, a Lambda function will check every runner instance to see if it’s busy. If a runner is not busy, it will be de-registered from GitHub Actions and the instance will be terminated. At the moment, there seems no other option to scale-down more smoothly.
+
+### Downloading the _Runners Agent_
+
+Downloading the GitHub Actions Runner distribution can occasionally be slow (more than 10 minutes). To address this, a Lambda function synchronizes the _Runners Agent_ from GitHub to an S3 bucket. The EC2 instance will fetch the distribution from the S3 bucket instead of the internet. Secrets and private keys are stored in Parameter Store and are encrypted either by using the default KMS key for SSM, or passing-in a custom KMS key.
+
+## Architecture Diagram
 
 ![Architecture](docs/component-overview.svg)
 
-Permission are managed on several places. Below the most important ones. For details check the Terraform sources.
+### Permissions
 
-- The GitHub App requires access to actions and publish `workflow_job` events to the AWS webhook (API gateway).
-- The scale up lambda should have access to EC2 for creating and tagging instances.
-- The scale down lambda should have access to EC2 to terminate instances.
+Permission are managed in several places. Below are the most important ones. For details, check the Terraform source.
 
-Besides these permissions, the lambdas also need permission to CloudWatch (for logging and scheduling), SSM and S3. For more details about the required permissions see the [documentation](./modules/setup-iam-permissions/README.md) of the IAM module which uses permission boundaries.
+- The GitHub App requires access to actions and publish `workflow_job` events to the webhook (API Gateway).
+- The scale-up Lambda function should have access to EC2 for creating and tagging instances.
+- The scale-down Lambda function should have access to EC2 to terminate instances.
+- Besides these permissions, the lambdas also need permission to CloudWatch (for logging and scheduling), SSM and S3. For more details about the required permissions see the [documentation](./modules/setup-iam-permissions/README.md) of the IAM module which uses permission boundaries.
+
+When running inside of a VPC, you'll need to pay attention to how your public and private subnets are configured. AWS Lambda will need to be able to communicate with both GitHub.com (or GitHub Enterprise Server) as well as the EC2 and SSM APIs. These are not part of this Terraform module, as different AWS accounts will have different requirements. But this is something to pay attention to, and address on your own (e.g., Terraform, CloudFormation, Control Tower, via the Console UI).
 
 ### ARM64 support via Graviton/Graviton2 instance-types
 
-When using the default example or top-level module, specifying an `instance_type` that matches a Graviton/Graviton 2 (ARM64) architecture (e.g. a1 or any 6th-gen `g` or `gd` type), the sub-modules will be automatically configured to provision with ARM64 AMIs and leverage GitHub's ARM64 action runner. See below for more details.
+When using the default example or top-level module, specifying an `instance_type` that matches a Graviton/Graviton 2 (ARM64) architecture (e.g., `a1` or any 6th-gen `g` or `gd` type), the sub-modules will be automatically configured to provision with ARM64 AMIs and leverage GitHub’s ARM64 action runner. See below for more details.
 
-## Usages
+## Usage
 
 Examples are provided in [the example directory](examples/). Please ensure you have installed the following tools.
 
