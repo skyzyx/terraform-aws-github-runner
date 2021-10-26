@@ -44,6 +44,8 @@ export async function listEC2Runners(filters: ListRunnerFilters | undefined = un
       ec2Filters.push({ Name: `tag:Owner`, Values: [filters.runnerOwner] });
     }
   }
+  console.log('Calling out to EC2. If this times-out, check that any private subnets can connect to the public ' +
+    'internet via NAT. https://aws.amazon.com/premiumsupport/knowledge-center/internet-access-lambda-function/');
   const runningInstances = await ec2.describeInstances({ Filters: ec2Filters }).promise();
   const runners: RunnerList[] = [];
   if (runningInstances.Reservations) {
@@ -67,6 +69,8 @@ export async function listEC2Runners(filters: ListRunnerFilters | undefined = un
 
 export async function terminateRunner(instanceId: string): Promise<void> {
   const ec2 = new EC2();
+  console.log('Calling out to EC2. If this times-out, check that any private subnets can connect to the public ' +
+    'internet via NAT. https://aws.amazon.com/premiumsupport/knowledge-center/internet-access-lambda-function/');
   await ec2
     .terminateInstances({
       InstanceIds: [instanceId],
@@ -78,12 +82,16 @@ export async function terminateRunner(instanceId: string): Promise<void> {
 export async function createRunner(runnerParameters: RunnerInputParameters, launchTemplateName: string): Promise<void> {
   console.debug('Runner configuration: ' + JSON.stringify(runnerParameters));
   const ec2 = new EC2();
+  console.log('Calling out to EC2. If this times-out, check that any private subnets can connect to the public ' +
+    'internet via NAT. https://aws.amazon.com/premiumsupport/knowledge-center/internet-access-lambda-function/');
   const runInstancesResponse = await ec2
     .runInstances(getInstanceParams(launchTemplateName, runnerParameters))
     .promise();
   console.info('Created instance(s): ', runInstancesResponse.Instances?.map((i) => i.InstanceId).join(','));
   const ssm = new SSM();
   runInstancesResponse.Instances?.forEach(async (i: EC2.Instance) => {
+    console.log('Calling out to EC2. If this times-out, check that any private subnets can connect to the public ' +
+      'internet via NAT. https://aws.amazon.com/premiumsupport/knowledge-center/internet-access-lambda-function/');
     await ssm
       .putParameter({
         Name: runnerParameters.environment + '-' + (i.InstanceId as string),
