@@ -115,7 +115,7 @@ GitHub workflows will fail _immediately_ if there is no Actions runner available
 
 Go to GitHub and [create a new app](https://docs.github.com/en/developers/apps/creating-a-github-app).
 
-> **NOTE:** You have the option to create apps for your organization or for a user. For now, we support only organization-level apps.
+> **NOTE:** You have the option to create apps for your **organization** or for a **user**.
 
 1. Create a new GitHub app. Choose a name, and give it an app URL (required by GitHub/GHES; not used by the module).
 
