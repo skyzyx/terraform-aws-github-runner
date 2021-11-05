@@ -152,20 +152,14 @@ In this example, we are using a file structure which looks something like this:
 ```plain
 .
 ├── bin
-│   ├── build-lambdas.sh
-│   └── generate-network-tfvars.sh
-├── docs
-│   └── OAUTH_APPLICATION.md
-├── terraform
-│   ├── 01-service-linked-role
-│   │   ├── main.tf
-│   │   └── ...
-│   └── 02-standup-infrastructure
-│       ├── main.tf
-│       └── ...
-├── .gitignore
-├── Makefile
-└── README.md
+│   └── build-lambdas.sh
+└── terraform
+    ├── 01-service-linked-role
+    │   ├── main.tf
+    │   └── ...
+    └── 02-standup-infrastructure
+        ├── main.tf
+        └── ...
 ```
 
 #### Service-Linked Role (One-Time Operation!)
