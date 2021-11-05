@@ -147,7 +147,7 @@ Go to GitHub and [create a new app](https://docs.github.com/en/developers/apps/c
 
 1. Another thing to remember is that Terraform will _automatically load_ any variables from `*.auto.tfvars` files. This means that you can write a little code to lookup networking values from AWS and save them as a standalone file (e.g., `networking.auto.tfvars`). This is also a good tip for keeping _secrets_ out of your Git repository. Put your secrets in a file that is `.gitignore`’d, and shared from a central place that the appropriate people have access to.
 
-In this example, I'm using a file structure which looks something like this:
+In this example, we are using a file structure which looks something like this:
 
 ```plain
 .
