@@ -188,6 +188,8 @@ resource "aws_iam_service_linked_role" "spot" {
 
 #### Pre-Compiling Lambda Functions
 
+> **IMPORTANT:** This is only required if you choose to compile the code from source (e.g., you have local edits in a fork). As an alternative, you may also download the _pristine_ pre-compiled `.zip` files from the _Releases_ page.
+
 In this example, this file lives in the filesystem at `{root}/bin/build-lambdas.sh`.
 
 ```bash
@@ -210,7 +212,7 @@ cd /tmp/aws-github-runner
 .ci/build.sh
 
 # Copy into the Terraform directory
-cp -rvf /tmp/aws-github-runner/lambda_output "${ROOT_DIR}/terraform/02-standup-infrastructure/lambda_output"
+cp -rvf /tmp/aws-github-runner/lambda_output/* "${ROOT_DIR}/terraform/02-standup-infrastructure/lambda_output/"
 
 # Clean up after ourselves
 rm -Rf /tmp/aws-github-runner
