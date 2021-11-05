@@ -24,6 +24,7 @@ resource "aws_sqs_queue" "queued_builds" {
   name                        = "${var.environment}-queued-builds.fifo"
   delay_seconds               = var.delay_webhook_event
   visibility_timeout_seconds  = var.runners_scale_up_lambda_timeout
+  message_retention_seconds   = var.job_queue_retention_in_seconds
   fifo_queue                  = true
   receive_wait_time_seconds   = 10
   content_based_deduplication = true
@@ -63,6 +64,9 @@ module "webhook" {
   role_path                 = var.role_path
   role_permissions_boundary = var.role_permissions_boundary
   repository_white_list     = var.repository_white_list
+
+  log_type  = var.log_type
+  log_level = var.log_level
 }
 
 module "runners" {
@@ -99,6 +103,7 @@ module "runners" {
   egress_rules                         = var.runner_egress_rules
   runner_additional_security_group_ids = var.runner_additional_security_group_ids
   volume_size                          = var.volume_size
+  metadata_options                     = var.runner_metadata_options
 
   lambda_s3_bucket                 = var.lambda_s3_bucket
   runners_lambda_s3_key            = var.runners_lambda_s3_key
@@ -122,6 +127,7 @@ module "runners" {
   userdata_pre_install  = var.userdata_pre_install
   userdata_post_install = var.userdata_post_install
   key_name              = var.key_name
+  runner_ec2_tags       = var.runner_ec2_tags
 
   create_service_linked_role_spot = var.create_service_linked_role_spot
 
@@ -131,6 +137,9 @@ module "runners" {
   ghes_ssl_verify = var.ghes_ssl_verify
 
   kms_key_arn = var.kms_key_arn
+
+  log_type  = var.log_type
+  log_level = var.log_level
 }
 
 module "runner_binaries" {
@@ -152,8 +161,13 @@ module "runner_binaries" {
   lambda_timeout                  = var.runner_binaries_syncer_lambda_timeout
   logging_retention_in_days       = var.logging_retention_in_days
 
+  server_side_encryption_configuration = var.runner_binaries_s3_sse_configuration
+
   role_path                 = var.role_path
   role_permissions_boundary = var.role_permissions_boundary
+
+  log_type  = var.log_type
+  log_level = var.log_level
 }
 
 resource "aws_resourcegroups_group" "resourcegroups_group" {
